@@ -140,6 +140,25 @@ def time_elapsed_pct(resets_at: str | None) -> float | None:
     return min(100.0, max(0.0, (WEEK_SECONDS - left) / WEEK_SECONDS * 100))
 
 
+def weekday_now(tz: ZoneInfo) -> int:
+    """0=週一 … 6=週日。測試時可用 FAKE_WEEKDAY 覆寫。"""
+    fake = os.environ.get("FAKE_WEEKDAY")
+    return int(fake) if fake else datetime.now(tz).weekday()
+
+
+def weekend_message(used: float, elapsed: float, remaining: float, resets_at: str | None) -> str:
+    spare = elapsed - used  # 比時間進度少用了幾個百分點
+    days_left = 0.0
+    if resets_at:
+        days_left = max(0.0, (datetime.fromisoformat(resets_at) - datetime.now(ZoneInfo("UTC"))).total_seconds() / 86400)
+    msg = f"\n\n🎉 週末快樂！你比時間進度少用了約 **{spare:.0f}%**，可以放心多做一點事。"
+    if days_left >= 1:
+        msg += f"\n距離重置還有 {days_left:.1f} 天，平均每天可以用 **{remaining / days_left:.0f}%**。"
+    else:
+        msg += "\n不到一天就重置了，剩下的額度不用就浪費囉！"
+    return msg
+
+
 def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None) -> dict:
     week = usage.get("seven_day") or {}
     used = float(week.get("utilization") or 0)
@@ -152,8 +171,11 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
         "inline": False,
     }]
     elapsed = time_elapsed_pct(week.get("resets_at"))
+    weekend_tip = ""
     if elapsed is not None:
         pace = "用得比時間快，省著點" if used > elapsed + 5 else "還有餘裕" if used < elapsed - 5 else "跟時間差不多"
+        if pace == "還有餘裕" and weekday_now(tz) in (4, 5):  # 週五、週六
+            weekend_tip = weekend_message(used, elapsed, remaining, week.get("resets_at"))
         fields.append({
             "name": "距離重置的時間進度",
             "value": f"`{bar(elapsed)}`\n已經過 **{elapsed:.0f}%**（{pace}）",
@@ -170,7 +192,8 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
 
     mention = f"<@{user_id}> " if user_id else ""
     return {
-        "content": f"{mention}晚安，今天的 Claude 7 天用量還剩 **{remaining:.0f}%**" + pat_warning(pat_days_left),
+        "content": f"{mention}晚安，今天的 Claude 7 天用量還剩 **{remaining:.0f}%**"
+                   + weekend_tip + pat_warning(pat_days_left),
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
             "title": "Claude 用量報告",
