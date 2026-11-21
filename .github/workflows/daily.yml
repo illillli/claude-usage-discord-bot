@@ -1,0 +1,30 @@
+name: Daily Claude usage report
+
+on:
+  schedule:
+    # GitHub 用 UTC：15:00 UTC = 台灣時間 23:00
+    - cron: "0 15 * * *"
+  workflow_dispatch: # 可以在 Actions 頁面手動按 Run 測試
+
+concurrency:
+  group: claude-usage
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send report
+        env:
+          CLAUDE_REFRESH_TOKEN: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          # 用來把輪替後的 refresh token 寫回 Secret（需要 Secrets 讀寫權限的 PAT）
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          TIMEZONE: Asia/Taipei
+        run: python bot.py
