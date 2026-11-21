@@ -25,7 +25,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"  # Claude Code 的 OAuth client id
@@ -129,7 +129,18 @@ def bar(remaining: float, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def build_message(usage: dict, user_id: str, tz: ZoneInfo) -> dict:
+WEEK_SECONDS = 7 * 24 * 3600
+
+
+def time_elapsed_pct(resets_at: str | None) -> float | None:
+    """7 天週期已經過了幾 %（以下次重置時間往回推 7 天當起點）。"""
+    if not resets_at:
+        return None
+    left = (datetime.fromisoformat(resets_at) - datetime.now(ZoneInfo("UTC"))).total_seconds()
+    return min(100.0, max(0.0, (WEEK_SECONDS - left) / WEEK_SECONDS * 100))
+
+
+def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None) -> dict:
     week = usage.get("seven_day") or {}
     used = float(week.get("utilization") or 0)
     remaining = max(0.0, 100 - used)
@@ -140,6 +151,14 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo) -> dict:
         "value": f"`{bar(remaining)}`\n剩 **{remaining:.0f}%**（已用 {used:.0f}%）\n重置：{fmt_reset(week.get('resets_at'), tz)}",
         "inline": False,
     }]
+    elapsed = time_elapsed_pct(week.get("resets_at"))
+    if elapsed is not None:
+        pace = "用得比時間快，省著點" if used > elapsed + 5 else "還有餘裕" if used < elapsed - 5 else "跟時間差不多"
+        fields.append({
+            "name": "距離重置的時間進度",
+            "value": f"`{bar(elapsed)}`\n已經過 **{elapsed:.0f}%**（{pace}）",
+            "inline": False,
+        })
     for key, label in [("seven_day_opus", "7 天 Opus"), ("seven_day_sonnet", "7 天 Sonnet")]:
         w = usage.get(key)
         if w and w.get("utilization") is not None:
@@ -151,7 +170,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo) -> dict:
 
     mention = f"<@{user_id}> " if user_id else ""
     return {
-        "content": f"{mention}晚安，今天的 Claude 7 天用量還剩 **{remaining:.0f}%**",
+        "content": f"{mention}晚安，今天的 Claude 7 天用量還剩 **{remaining:.0f}%**" + pat_warning(pat_days_left),
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
             "title": "Claude 用量報告",
@@ -162,11 +181,57 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo) -> dict:
     }
 
 
-def build_error_message(err: Exception, user_id: str) -> dict:
+PAT_WARN_DAYS = 7
+
+
+def get_pat_days_left() -> float | None:
+    """問 GitHub API，從回應標頭讀出 GH_PAT 的到期時間，回傳剩幾天（沒設到期日就回 None）。"""
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if not token:
+        return None
+    req = urllib.request.Request("https://api.github.com/rate_limit", headers={
+        "Authorization": f"Bearer {token}",
+        "User-Agent": USER_AGENT,
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.headers.get("github-authentication-token-expiration")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return 0.0  # 已經過期或失效
+        print(f"查 GH_PAT 到期日失敗：HTTP {e.code}", file=sys.stderr)
+        return None
+    except Exception as e:  # noqa: BLE001 - 查不到不影響主要功能
+        print(f"查 GH_PAT 到期日失敗：{e}", file=sys.stderr)
+        return None
+    if not raw:
+        return None
+    # 格式像 "2026-12-21 16:00:00 UTC" 或 "2026-12-21 16:00:00 +0800"
+    expires = datetime.strptime(raw.replace(" UTC", " +0000"), "%Y-%m-%d %H:%M:%S %z")
+    return (expires - datetime.now(ZoneInfo("UTC"))).total_seconds() / 86400
+
+
+def pat_warning(days_left: float | None) -> str:
+    if days_left is None or days_left > PAT_WARN_DAYS:
+        return ""
+    if days_left <= 0:
+        when = "**已經過期**"
+    elif days_left < 1:
+        when = "**今天就會過期**"
+    else:
+        when = f"再 **{days_left:.0f} 天**就會過期"
+    return (f"\n\n🔑 提醒：`GH_PAT` {when}，過期後 bot 就存不了新的 Claude token。"
+            "請到 GitHub 建一把新的，再執行 "
+            f"`gh secret set GH_PAT --repo {os.environ.get('GITHUB_REPOSITORY') or '<你的 repo>'}` 更新。")
+
+
+def build_error_message(err: Exception, user_id: str, pat_days_left: float | None = None) -> dict:
     mention = f"<@{user_id}> " if user_id else ""
     return {
         "content": f"{mention}⚠️ 今天抓不到 Claude 用量：\n```{str(err)[:1500]}```\n"
-                   "如果是 token 失效，照 README 的「重新登入」步驟更新 `CLAUDE_REFRESH_TOKEN`。",
+                   "如果是 token 失效，照 README 的「重新登入」步驟更新 `CLAUDE_REFRESH_TOKEN`。"
+                   + pat_warning(pat_days_left),
         "allowed_mentions": {"users": [user_id] if user_id else []},
     }
 
@@ -183,21 +248,24 @@ def main() -> int:
     fake = "--fake" in sys.argv
     tz = ZoneInfo(os.environ.get("TIMEZONE") or "Asia/Taipei")
     user_id = os.environ.get("DISCORD_USER_ID", "").strip()
+    pat_days_left = float(os.environ["FAKE_PAT_DAYS"]) if fake and os.environ.get("FAKE_PAT_DAYS") else get_pat_days_left()
+    if pat_days_left is not None:
+        print(f"GH_PAT 剩 {pat_days_left:.1f} 天到期")
 
     try:
         if fake:
             usage = {
                 "five_hour": {"utilization": 12.0, "resets_at": "2099-01-01T00:00:00+00:00"},
-                "seven_day": {"utilization": 63.0, "resets_at": datetime.now(tz).replace(microsecond=0).isoformat()},
+                "seven_day": {"utilization": 63.0, "resets_at": (datetime.now(tz) + timedelta(days=2)).replace(microsecond=0).isoformat()},
                 "seven_day_opus": None,
                 "seven_day_sonnet": {"utilization": 8.0, "resets_at": None},
             }
         else:
             usage = get_usage(get_access_token())
-        payload = build_message(usage, user_id, tz)
+        payload = build_message(usage, user_id, tz, pat_days_left)
         ok = True
     except Exception as e:  # noqa: BLE001 - 失敗也要通知
-        payload = build_error_message(e, user_id)
+        payload = build_error_message(e, user_id, pat_days_left)
         ok = False
         print(f"錯誤：{e}", file=sys.stderr)
 
