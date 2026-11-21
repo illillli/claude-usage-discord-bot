@@ -61,17 +61,19 @@ def mask(value: str) -> None:
         print(f"::add-mask::{value}")
 
 
-def save_rotated_refresh_token(new_token: str) -> None:
+def save_secret(name: str, value: str) -> bool:
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not (repo and os.environ.get("GH_TOKEN") and shutil.which("gh")):
+        return False
+    subprocess.run(["gh", "secret", "set", name, "--repo", repo], input=value.encode(), check=True)
+    return True
+
+
+def save_rotated_refresh_token(new_token: str) -> None:
+    if save_secret("CLAUDE_REFRESH_TOKEN", new_token):
+        print("已把新的 refresh token 寫回 GitHub Secret。")
+    else:
         print("⚠️ refresh token 已輪替，但沒有 GH_TOKEN，無法寫回 Secret。下次執行可能會失敗。")
-        return
-    subprocess.run(
-        ["gh", "secret", "set", "CLAUDE_REFRESH_TOKEN", "--repo", repo],
-        input=new_token.encode(),
-        check=True,
-    )
-    print("已把新的 refresh token 寫回 GitHub Secret。")
 
 
 def get_access_token() -> str:
@@ -113,31 +115,52 @@ def get_usage(access_token: str) -> dict:
     })
 
 
-def fmt_reset(iso: str | None, tz: ZoneInfo) -> str:
-    if not iso:
-        return "—"
-    dt = datetime.fromisoformat(iso).astimezone(tz)
-    now = datetime.now(tz)
-    hours = max(0, (dt - now).total_seconds() / 3600)
-    left = f"{hours / 24:.1f} 天後" if hours >= 24 else f"{hours:.1f} 小時後"
-    weekday = "一二三四五六日"[dt.weekday()]
-    return f"{dt:%m/%d}（{weekday}）{dt:%H:%M}，{left}"
-
-
-def bar(remaining: float, width: int = 20) -> str:
-    filled = round(remaining / 100 * width)
-    return "█" * filled + "░" * (width - filled)
-
-
 WEEK_SECONDS = 7 * 24 * 3600
+BLOCKS = 10
+
+
+def to_dt(iso: str | None) -> datetime | None:
+    return datetime.fromisoformat(iso) if iso else None
+
+
+def hours_until(dt: datetime | None) -> float:
+    if not dt:
+        return 0.0
+    return max(0.0, (dt - datetime.now(ZoneInfo("UTC"))).total_seconds() / 3600)
 
 
 def time_elapsed_pct(resets_at: str | None) -> float | None:
     """7 天週期已經過了幾 %（以下次重置時間往回推 7 天當起點）。"""
-    if not resets_at:
+    dt = to_dt(resets_at)
+    if not dt:
         return None
-    left = (datetime.fromisoformat(resets_at) - datetime.now(ZoneInfo("UTC"))).total_seconds()
+    left = hours_until(dt) * 3600
     return min(100.0, max(0.0, (WEEK_SECONDS - left) / WEEK_SECONDS * 100))
+
+
+def emoji_bar(pct: float, full: str) -> str:
+    filled = max(0, min(BLOCKS, round(pct / 100 * BLOCKS)))
+    return full * filled + "⬛" * (BLOCKS - filled)
+
+
+def level_square(remaining: float) -> str:
+    return "🟩" if remaining >= 50 else "🟨" if remaining >= 20 else "🟥"
+
+
+def discord_time(dt: datetime | None) -> str:
+    """Discord 時間戳記：會自動用看的人的時區顯示，還有「幾小時後」的倒數。"""
+    if not dt:
+        return "—"
+    ts = int(dt.timestamp())
+    return f"<t:{ts}:f>（<t:{ts}:R>）"
+
+
+def fmt_left(hours: float) -> str:
+    if hours >= 24:
+        return f"{hours / 24:.1f} 天"
+    if hours >= 1:
+        return f"{hours:.1f} 小時"
+    return f"{hours * 60:.0f} 分鐘"
 
 
 def weekday_now(tz: ZoneInfo) -> int:
@@ -148,10 +171,8 @@ def weekday_now(tz: ZoneInfo) -> int:
 
 def weekend_message(used: float, elapsed: float, remaining: float, resets_at: str | None) -> str:
     spare = elapsed - used  # 比時間進度少用了幾個百分點
-    days_left = 0.0
-    if resets_at:
-        days_left = max(0.0, (datetime.fromisoformat(resets_at) - datetime.now(ZoneInfo("UTC"))).total_seconds() / 86400)
-    msg = f"\n\n🎉 週末快樂！你比時間進度少用了約 **{spare:.0f}%**，可以放心多做一點事。"
+    days_left = hours_until(to_dt(resets_at)) / 24
+    msg = f"你比時間進度少用了約 **{spare:.0f}%**，可以放心多做一點事！"
     if days_left >= 1:
         msg += f"\n距離重置還有 {days_left:.1f} 天，平均每天可以用 **{remaining / days_left:.0f}%**。"
     else:
@@ -163,43 +184,63 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
     week = usage.get("seven_day") or {}
     used = float(week.get("utilization") or 0)
     remaining = max(0.0, 100 - used)
+    reset_dt = to_dt(week.get("resets_at"))
     color = 0x2ECC71 if remaining >= 50 else 0xF1C40F if remaining >= 20 else 0xE74C3C
 
-    fields = [{
-        "name": "7 天總用量",
-        "value": f"`{bar(remaining)}`\n剩 **{remaining:.0f}%**（已用 {used:.0f}%）\n重置：{fmt_reset(week.get('resets_at'), tz)}",
-        "inline": False,
-    }]
     elapsed = time_elapsed_pct(week.get("resets_at"))
-    weekend_tip = ""
+    lines = [
+        "**📅 7 天總用量**",
+        f"{emoji_bar(remaining, level_square(remaining))}  **{remaining:.0f}%** 剩餘",
+        f"-# 已用 {used:.0f}%",
+    ]
     if elapsed is not None:
-        pace = "用得比時間快，省著點" if used > elapsed + 5 else "還有餘裕" if used < elapsed - 5 else "跟時間差不多"
-        if pace == "還有餘裕" and weekday_now(tz) in (4, 5):  # 週五、週六
-            weekend_tip = weekend_message(used, elapsed, remaining, week.get("resets_at"))
-        fields.append({
-            "name": "距離重置的時間進度",
-            "value": f"`{bar(elapsed)}`\n已經過 **{elapsed:.0f}%**（{pace}）",
-            "inline": False,
-        })
-    for key, label in [("seven_day_opus", "7 天 Opus"), ("seven_day_sonnet", "7 天 Sonnet")]:
-        w = usage.get(key)
-        if w and w.get("utilization") is not None:
-            u = float(w["utilization"])
-            fields.append({"name": label, "value": f"剩 {100 - u:.0f}%", "inline": True})
+        if used > elapsed + 5:
+            pace, pace_icon = "用得比時間快，省著點", "🔴"
+        elif used < elapsed - 5:
+            pace, pace_icon = "還有餘裕", "🟢"
+        else:
+            pace, pace_icon = "跟時間差不多", "🟡"
+        lines += [
+            "",
+            "**⏳ 時間進度**",
+            f"{emoji_bar(elapsed, '🟦')}  **{elapsed:.0f}%** 已過",
+            f"-# 離重置還有 {fmt_left(hours_until(reset_dt))}",
+            "",
+            f"**🧭 使用節奏**　{pace_icon} {pace}",
+        ]
+    else:
+        pace = ""
+
+    fields = []
     five = usage.get("five_hour")
     if five and five.get("utilization") is not None:
-        fields.append({"name": "5 小時", "value": f"剩 {100 - float(five['utilization']):.0f}%", "inline": True})
+        fields.append({"name": "⚡ 5 小時", "value": f"剩 **{100 - float(five['utilization']):.0f}%**", "inline": True})
+    for key, label in [("seven_day_sonnet", "🎼 Sonnet 週額度"), ("seven_day_opus", "💎 Opus 週額度")]:
+        w = usage.get(key)
+        if w and w.get("utilization") is not None:
+            fields.append({"name": label, "value": f"剩 **{100 - float(w['utilization']):.0f}%**", "inline": True})
+    fields.append({"name": "🔄 下次重置", "value": discord_time(reset_dt), "inline": False})
+
+    if pace == "還有餘裕" and weekday_now(tz) in (4, 5):  # 週五、週六
+        fields.append({"name": "🎉 週末加碼",
+                       "value": weekend_message(used, elapsed, remaining, week.get("resets_at")),
+                       "inline": False})
+    warn = pat_warning(pat_days_left)
+    if warn:
+        fields.append({"name": "🔑 GH_PAT 快過期了", "value": warn, "inline": False})
 
     mention = f"<@{user_id}> " if user_id else ""
     return {
-        "content": f"{mention}晚安，今天的 Claude 7 天用量還剩 **{remaining:.0f}%**"
-                   + weekend_tip + pat_warning(pat_days_left),
+        "content": f"{mention}🌙 晚安！今天的 Claude 用量報告來了",
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
-            "title": "Claude 用量報告",
+            "author": {"name": "Claude 用量小幫手"},
+            "title": f"本週還剩 {remaining:.0f}%",
+            "description": "\n".join(lines),
             "color": color,
             "fields": fields,
-            "footer": {"text": datetime.now(tz).strftime("%Y-%m-%d %H:%M")},
+            "footer": {"text": "每天 23:00 自動回報"},
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
         }],
     }
 
@@ -244,26 +285,59 @@ def pat_warning(days_left: float | None) -> str:
         when = "**今天就會過期**"
     else:
         when = f"再 **{days_left:.0f} 天**就會過期"
-    return (f"\n\n🔑 提醒：`GH_PAT` {when}，過期後 bot 就存不了新的 Claude token。"
-            "請到 GitHub 建一把新的，再執行 "
+    return (f"`GH_PAT` {when}，過期後 bot 就存不了新的 Claude token。\n"
+            "請到 GitHub 建一把新的，再執行\n"
             f"`gh secret set GH_PAT --repo {os.environ.get('GITHUB_REPOSITORY') or '<你的 repo>'}` 更新。")
 
 
 def build_error_message(err: Exception, user_id: str, pat_days_left: float | None = None) -> dict:
     mention = f"<@{user_id}> " if user_id else ""
+    fields = [{"name": "怎麼辦？",
+               "value": "如果是 token 失效，照 README 的「重新登入」步驟更新 `CLAUDE_REFRESH_TOKEN`。",
+               "inline": False}]
+    warn = pat_warning(pat_days_left)
+    if warn:
+        fields.append({"name": "🔑 GH_PAT 快過期了", "value": warn, "inline": False})
     return {
-        "content": f"{mention}⚠️ 今天抓不到 Claude 用量：\n```{str(err)[:1500]}```\n"
-                   "如果是 token 失效，照 README 的「重新登入」步驟更新 `CLAUDE_REFRESH_TOKEN`。"
-                   + pat_warning(pat_days_left),
+        "content": f"{mention}⚠️ 今天抓不到 Claude 用量",
         "allowed_mentions": {"users": [user_id] if user_id else []},
+        "embeds": [{
+            "title": "發生錯誤",
+            "description": f"```{str(err)[:1500]}```",
+            "color": 0xE74C3C,
+            "fields": fields,
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
+        }],
     }
 
 
-def send_discord(payload: dict) -> None:
+def webhook_url() -> str:
     url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not url:
         raise RuntimeError("沒有設定 DISCORD_WEBHOOK_URL")
-    http_json(url, data=payload)
+    return url.split("?")[0].rstrip("/")
+
+
+def send_discord(payload: dict) -> str | None:
+    """發訊息，回傳新訊息的 ID（?wait=true 才會回傳訊息內容）。"""
+    res = http_json(webhook_url() + "?wait=true", data=payload)
+    return res.get("id")
+
+
+def delete_previous_message() -> None:
+    """刪掉上一則 bot 發的訊息（ID 存在 LAST_DISCORD_MESSAGE_ID 這個 Secret）。"""
+    old_id = os.environ.get("LAST_DISCORD_MESSAGE_ID", "").strip()
+    if not old_id:
+        return
+    req = urllib.request.Request(f"{webhook_url()}/messages/{old_id}", method="DELETE",
+                                 headers={"User-Agent": USER_AGENT})
+    try:
+        urllib.request.urlopen(req, timeout=15).close()
+        print("已刪除上一則訊息。")
+    except urllib.error.HTTPError as e:
+        # 404 = 已經被手動刪掉了，不用管
+        if e.code != 404:
+            print(f"刪除上一則訊息失敗：HTTP {e.code}", file=sys.stderr)
 
 
 def main() -> int:
@@ -295,8 +369,12 @@ def main() -> int:
     if dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        send_discord(payload)
+        new_id = send_discord(payload)
         print("已發送到 Discord。")
+        # 新訊息發成功之後才刪舊的，避免兩則都不見
+        delete_previous_message()
+        if new_id and save_secret("LAST_DISCORD_MESSAGE_ID", new_id):
+            print("已記下這則訊息的 ID，下次會刪掉它。")
     return 0 if ok else 1
 
 

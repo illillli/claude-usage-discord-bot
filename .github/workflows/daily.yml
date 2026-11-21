@@ -24,6 +24,8 @@ jobs:
           CLAUDE_REFRESH_TOKEN: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          # 上一則訊息的 ID，bot 會自動維護，用來刪掉舊訊息
+          LAST_DISCORD_MESSAGE_ID: ${{ secrets.LAST_DISCORD_MESSAGE_ID }}
           # 用來把輪替後的 refresh token 寫回 Secret（需要 Secrets 讀寫權限的 PAT）
           GH_TOKEN: ${{ secrets.GH_PAT }}
           TIMEZONE: Asia/Taipei
