@@ -1,26 +1,36 @@
-﻿# Claude ?券? Discord ??
+# Claude 用量 Discord 提醒
 
-瘥予?啁?? 23:00嚗 GitHub Actions ??Discord ?駁? @ 雿?甈∴??迄雿?Claude ??7 憭拍???拙?撠?銋??? 5 撠??onnet/Opus ??????
-- 頝 GitHub ?撩?銝??餉??銋??批虜??- ??Discord Webhook ?潸??荔?銝??bot 隡箸???- ???啗???銋? @ 雿?銝西牧????
-> ?券?鞈?靘 Claude Code `/usage` ?函??????ｇ?`api.anthropic.com/api/oauth/usage`嚗??臬??孵?? API嚗憭拇??賢停憭望???
-## 閮剖?甇仿?
+每天台灣時間 23:00，用 GitHub Actions 到 Discord 頻道 @ 你一次，告訴你 Claude 的 7 天用量還剩多少（也會附上 5 小時、Sonnet/Opus 的分項）。
 
-### 1. 撱?Discord Webhook
+- 跑在 GitHub 的伺服器上，電腦關機也會照常發
+- 用 Discord Webhook 發訊息，不用架 bot 伺服器
+- 抓不到資料時也會 @ 你，並說明原因
 
-Discord ?駁? ??蝺刻摩?駁? ???游? ??Webhook ????Webhook ??銴ˊ Webhook 蝬脣???
-### 2. ??雿? Discord 雿輻??ID
+> 用量資料來自 Claude Code `/usage` 用的同一個介面（`api.anthropic.com/api/oauth/usage`）。這不是官方公開的 API，哪天改版可能就失效。
 
-Discord 雿輻?身摰????脤? ???????潸芋撘敺?芸楛????????銴ˊ雿輻??ID??
-### 3. 撱?GitHub Personal Access Token嚗? bot ?賣??token嚗?
-Claude ??refresh token 瘥銝甈∪停???堆?bot 閬??啁?撖怠? Secret嚗?隞仿?閬???甈???token嚗?
-GitHub ??Settings ??Developer settings ??Fine-grained tokens ??Generate new token
-- Repository access嚗?賊?repo
-- Permissions ??Repository permissions ??**Secrets嚗ead and write**
-- ?????芸楛?賂???敺???
+## 設定步驟
 
-### 4. 閮剖? Secrets
+### 1. 建 Discord Webhook
 
-?券??冗??PowerShell ?瑁?嚗???隞斗?隢?鞎潔??潘?嚗?
+Discord 頻道 → 編輯頻道 → 整合 → Webhook → 新 Webhook → 複製 Webhook 網址。
+
+### 2. 取得你的 Discord 使用者 ID
+
+Discord 使用者設定 → 進階 → 開啟「開發者模式」。然後在自己的頭像上按右鍵 → 複製使用者 ID。
+
+### 3. 建 GitHub Personal Access Token（讓 bot 能更新 token）
+
+Claude 的 refresh token 每用一次就會換新，bot 要把新的寫回 Secret，所以需要一把有權限的 token：
+
+GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token
+- Repository access：只選這個 repo
+- Permissions → Repository permissions → **Secrets：Read and write**
+- 有效期限自己選（過期後要換）
+
+### 4. 設定 Secrets
+
+在這個資料夾用 PowerShell 執行（每個指令會請你貼上值）：
+
 ```powershell
 gh secret set DISCORD_WEBHOOK_URL --repo illillli/claude-usage-discord-bot
 ```
@@ -33,25 +43,31 @@ gh secret set DISCORD_USER_ID --repo illillli/claude-usage-discord-bot
 gh secret set GH_PAT --repo illillli/claude-usage-discord-bot
 ```
 
-### 5. 撟?bot ?餃 Claude
+### 5. 幫 bot 登入 Claude
 
 ```powershell
 .\setup-token.ps1
 ```
 
-摰??典銝?蝡?閮剖?鞈?憭暸? Claude Code嚗?頛詨 `/login` ?餃?? `/exit` ?ａ?嚗?砍停?? refresh token ?湔摮?`CLAUDE_REFRESH_TOKEN`??撟喳虜?函? Claude Code 銝?鋡怎?箝?
-### 6. 皜祈岫
+它會用另一個獨立的設定資料夾開 Claude Code，你輸入 `/login` 登入、再 `/exit` 離開，腳本就會把 refresh token 直接存進 `CLAUDE_REFRESH_TOKEN`。你平常用的 Claude Code 不會被登出。
 
-GitHub repo ??Actions ??Daily Claude usage report ??Run workflow?iscord ?府擐砌??嗅閮??
-## ??餃
+### 6. 測試
 
-憒??嗅?? access token 憭望???閮嚗誨銵?refresh token 憭望?鈭?靘? PAT ??瘝撖怠???雿 claude.ai ?餃???蝵殷?嚗??啗?銝甈∠洵 5 甇亙停憟賬?
-## ?祆?皜祈岫
+GitHub repo → Actions → Daily Claude usage report → Run workflow。Discord 應該馬上收到訊息。
+
+## 重新登入
+
+如果收到「換 access token 失敗」的訊息，代表 refresh token 失效了（例如 PAT 過期沒能寫回、或你在 claude.ai 登出所有裝置），重新跑一次第 5 步就好。
+
+## 本機測試
 
 ```powershell
 python bot.py --fake --dry-run
 ```
 
-`--fake` ?典?鞈??--dry-run` ?芸?箔??潮?
-## 撠???
-- GitHub ??蝔?撜唳?畾萄?賢辣?脣嗾???啣?撠???- 閬??撠望 `.github/workflows/daily.yml` ??`cron`嚗TC ??嚗???皜?8 撠?嚗?
+`--fake` 用假資料、`--dry-run` 只印出不發送。
+
+## 小提醒
+
+- GitHub 的排程尖峰時段可能延遲幾分鐘到半小時。
+- 要改時間就改 `.github/workflows/daily.yml` 的 `cron`（UTC 時間，台灣要減 8 小時）。
