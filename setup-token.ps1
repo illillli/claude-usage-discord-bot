@@ -1,4 +1,4 @@
-# 幫 bot 另外登入一次 Claude，並把 refresh token 直接存進 GitHub Secret（不會顯示在畫面上）。
+﻿# 幫 bot 另外登入一次 Claude，並把 refresh token 直接存進 GitHub Secret（不會顯示在畫面上）。
 # 用法：在這個資料夾執行  .\setup-token.ps1
 # 用獨立的設定資料夾登入，所以不會把你平常用的 Claude Code 登出。
 
