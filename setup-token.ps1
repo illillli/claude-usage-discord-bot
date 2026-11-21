@@ -2,8 +2,8 @@
 # 用法：在這個資料夾執行  .\setup-token.ps1
 # 用獨立的設定資料夾登入，所以不會把你平常用的 Claude Code 登出。
 
+param([string]$repo = "illillli/claude-usage-discord-bot")
 $ErrorActionPreference = "Stop"
-$repo = (gh repo view --json nameWithOwner -q .nameWithOwner)
 $dir = Join-Path $PSScriptRoot ".claude-bot-login"
 New-Item -ItemType Directory -Force $dir | Out-Null
 
