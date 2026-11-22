@@ -1,18 +1,19 @@
 name: Daily Claude usage report
 
+# 主要由 cron-job.org 每天 23:00 用 workflow_dispatch 觸發；
+# backup.yml 的 GitHub 排程只是備援（會呼叫這個 workflow）。
+# 這裡刻意不放 schedule：public repo 60 天沒活動時，含排程的 workflow 會被停用，
+# 拆開之後就算 backup.yml 被停用，這個主流程還是能被 cron-job.org 觸發。
 on:
-  schedule:
-    # GitHub 用 UTC：15:00 UTC = 台灣時間 23:00。
-    # GitHub 的排程常常被延後或直接跳過，所以多排幾個時間當備援；
-    # bot.py 會擋掉同一天的重複發送、以及 22:00–03:00 以外的時段。
-    - cron: "3 15 * * *"
-    - cron: "23 15 * * *"
-    - cron: "43 15 * * *"
-    - cron: "13 16 * * *"
-  workflow_dispatch: # 外部排程（cron-job.org）或手動按 Run 觸發
+  workflow_dispatch:
     inputs:
       force:
         description: "不管時段、今天有沒有發過，都直接發一次（測試用）"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      force:
         type: boolean
         default: false
 

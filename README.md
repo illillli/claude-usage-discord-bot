@@ -69,16 +69,19 @@ python bot.py --fake --dry-run
 
 ## 小提醒
 
-- GitHub 的排程尖峰時段可能延遲幾分鐘到半小時。
-- 要改時間就改 `.github/workflows/daily.yml` 的 `cron`（UTC 時間，台灣要減 8 小時）。
+- 要改發送時間：改 cron-job.org 上的時間，以及 `.github/workflows/backup.yml` 的備援 `cron`（UTC 時間，台灣要減 8 小時）。
+- `bot.py` 只會在 22:00–03:00 發送，改時間的話也要改 `should_skip()` 裡的時段。
 
-## 讓排程更準時（建議）
+## 排程怎麼運作
 
-GitHub 的免費排程常常被延後好幾個小時，甚至直接跳過，所以 workflow 裡排了四個時間當備援，`bot.py` 也會自動擋掉：
-- 同一天的重複發送
-- 22:00–03:00 以外的時段
+GitHub 的免費排程常常被延後好幾個小時，甚至直接跳過，所以：
+- **主要**：[cron-job.org](https://cron-job.org) 每天 23:00 準時呼叫 GitHub 跑 `daily.yml`。
+- **備援**：`backup.yml` 用 GitHub 自己的排程在 23:13、23:43、00:13 各試一次。
+- `bot.py` 會自動擋掉同一天的重複發送，以及 22:00–03:00 以外的時段，所以不會收到兩則。
 
-想要每天準時 23:00，可以用免費的 [cron-job.org](https://cron-job.org) 準時叫 GitHub 跑：
+`daily.yml` 刻意不放排程：public repo 60 天沒有 commit 時，GitHub 會停用含排程的 workflow，拆開後就算 `backup.yml` 被停用，cron-job.org 還是能正常觸發。
+
+cron-job.org 的設定方式：
 
 1. GitHub 建一把新的 fine-grained token：只選這個 repo，權限只要 **Actions: Read and write**。
 2. cron-job.org 註冊後新增 Cronjob：

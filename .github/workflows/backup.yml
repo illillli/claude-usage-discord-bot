@@ -1,0 +1,14 @@
+name: Backup schedule
+
+# GitHub 自己的排程常被延後或跳過，只當 cron-job.org 的備援。
+# 15:00 UTC = 台灣時間 23:00。bot.py 會擋掉同一天的重複發送、以及 22:00–03:00 以外的時段。
+on:
+  schedule:
+    - cron: "13 15 * * *"
+    - cron: "43 15 * * *"
+    - cron: "13 16 * * *"
+
+jobs:
+  report:
+    uses: ./.github/workflows/daily.yml
+    secrets: inherit
