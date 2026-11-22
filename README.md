@@ -71,3 +71,24 @@ python bot.py --fake --dry-run
 
 - GitHub 的排程尖峰時段可能延遲幾分鐘到半小時。
 - 要改時間就改 `.github/workflows/daily.yml` 的 `cron`（UTC 時間，台灣要減 8 小時）。
+
+## 讓排程更準時（建議）
+
+GitHub 的免費排程常常被延後好幾個小時，甚至直接跳過，所以 workflow 裡排了四個時間當備援，`bot.py` 也會自動擋掉：
+- 同一天的重複發送
+- 22:00–03:00 以外的時段
+
+想要每天準時 23:00，可以用免費的 [cron-job.org](https://cron-job.org) 準時叫 GitHub 跑：
+
+1. GitHub 建一把新的 fine-grained token：只選這個 repo，權限只要 **Actions: Read and write**。
+2. cron-job.org 註冊後新增 Cronjob：
+   - URL：`https://api.github.com/repos/illillli/claude-usage-discord-bot/actions/workflows/daily.yml/dispatches`
+   - 時間：每天 23:00，時區選 Asia/Taipei
+   - Advanced → Request method 選 **POST**
+   - Headers：`Authorization: Bearer <剛剛的 token>`、`Accept: application/vnd.github+json`
+   - Request body：`{"ref":"main"}`
+3. 存檔後按 Test run，GitHub Actions 應該會出現一次執行。
+
+## 手動測試
+
+Actions → Daily Claude usage report → Run workflow。不勾 **force** 時一樣會套用上面的時段和防重複規則；勾了就會直接發。

@@ -340,11 +340,31 @@ def delete_previous_message() -> None:
             print(f"刪除上一則訊息失敗：HTTP {e.code}", file=sys.stderr)
 
 
+def report_day(now: datetime) -> str:
+    """這次報告算哪一天的：往回推 12 小時，所以凌晨晚到的觸發還算前一天。"""
+    return (now - timedelta(hours=12)).date().isoformat()
+
+
+def should_skip(now: datetime) -> str | None:
+    """自動觸發可能會重複或很晚才來，這裡擋掉。回傳跳過的原因，None 代表要發。"""
+    if os.environ.get("FORCE") == "1":
+        return None
+    if not (now.hour >= 22 or now.hour < 3):
+        return f"現在 {now:%H:%M} 不在 22:00–03:00 的發送時段"
+    if os.environ.get("LAST_SENT_DAY", "").strip() == report_day(now):
+        return f"{report_day(now)} 的報告已經發過了"
+    return None
+
+
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
     fake = "--fake" in sys.argv
     tz = ZoneInfo(os.environ.get("TIMEZONE") or "Asia/Taipei")
     user_id = os.environ.get("DISCORD_USER_ID", "").strip()
+    now = datetime.now(tz)
+    if not dry_run and (reason := should_skip(now)):
+        print(f"跳過：{reason}。")
+        return 0
     pat_days_left = float(os.environ["FAKE_PAT_DAYS"]) if fake and os.environ.get("FAKE_PAT_DAYS") else get_pat_days_left()
     if pat_days_left is not None:
         print(f"GH_PAT 剩 {pat_days_left:.1f} 天到期")
@@ -375,6 +395,8 @@ def main() -> int:
         delete_previous_message()
         if new_id and save_secret("LAST_DISCORD_MESSAGE_ID", new_id):
             print("已記下這則訊息的 ID，下次會刪掉它。")
+        if os.environ.get("FORCE") != "1":
+            save_secret("LAST_SENT_DAY", report_day(now))
     return 0 if ok else 1
 
 
