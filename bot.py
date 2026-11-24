@@ -180,6 +180,42 @@ def weekend_message(used: float, elapsed: float, remaining: float, resets_at: st
     return msg
 
 
+# 使用節奏等級：spare = 時間進度 − 用量（正的代表比時間省、負的代表用太快）
+PACE_TIERS = [
+    (25, "🤩", "超級有餘裕", "額度多到用不完，放心大膽地用！"),
+    (10, "🟢", "很有餘裕", "可以多開幾個任務，用起來！"),
+    (3, "🍀", "稍有餘裕", "比進度省一點，維持這個步調就好。"),
+    (-3, "🟡", "跟時間差不多", "步調剛剛好，照這樣用就對了。"),
+    (-10, "🟠", "有點快", "稍微放慢一點會比較保險。"),
+    (-25, "🔴", "用太快了", "要省著用了，先處理重要的事。"),
+    (float("-inf"), "🚨", "快不夠用", "照這樣下去會提早用完，盡量只做必要的。"),
+]
+
+
+def pace_tier(used: float, elapsed: float) -> tuple[float, str, str, str]:
+    spare = elapsed - used
+    # 週期剛開始（前 10% 的時間）用一點點很正常，不急著說用太快
+    if elapsed < 10 and used <= 15:
+        return spare, "🌱", "新的一週", "額度剛重置，盡情用吧！"
+    for threshold, icon, label, advice in PACE_TIERS:
+        if spare >= threshold:
+            return spare, icon, label, advice
+    raise AssertionError("unreachable")
+
+
+def projection(used: float, elapsed: float, hours_to_reset: float) -> str | None:
+    """照目前的平均速度，預估重置時會用到多少、或多久之後會用完。"""
+    if elapsed < 3 or used <= 0:
+        return None  # 週期剛開始，資料太少不準
+    projected = used / elapsed * 100
+    if projected <= 100:
+        return f"照目前速度，重置時大約會用到 **{projected:.0f}%**"
+    elapsed_hours = elapsed / 100 * WEEK_SECONDS / 3600
+    hours_to_empty = (100 - used) / (used / elapsed_hours)
+    return (f"照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完"
+            f"（比重置早 {fmt_left(hours_to_reset - hours_to_empty)}）")
+
+
 def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None,
                   is_noon: bool = False) -> dict:
     week = usage.get("seven_day") or {}
@@ -194,23 +230,24 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
         f"{emoji_bar(remaining, level_square(remaining))}  **{remaining:.0f}%** 剩餘",
         f"-# 已用 {used:.0f}%",
     ]
+    spare = None
     if elapsed is not None:
-        if used > elapsed + 5:
-            pace, pace_icon = "用得比時間快，省著點", "🔴"
-        elif used < elapsed - 5:
-            pace, pace_icon = "還有餘裕", "🟢"
-        else:
-            pace, pace_icon = "跟時間差不多", "🟡"
+        spare, pace_icon, pace_label, pace_advice = pace_tier(used, elapsed)
+        diff = (f"比時間進度省了 {spare:.0f}%" if spare >= 0.5
+                else f"比時間進度多用了 {-spare:.0f}%" if spare <= -0.5 else "和時間進度一樣")
         lines += [
             "",
             "**⏳ 時間進度**",
             f"{emoji_bar(elapsed, '🟦')}  **{elapsed:.0f}%** 已過",
             f"-# 離重置還有 {fmt_left(hours_until(reset_dt))}",
             "",
-            f"**🧭 使用節奏**　{pace_icon} {pace}",
+            f"**🧭 使用節奏**　{pace_icon} **{pace_label}**",
+            pace_advice,
+            f"-# {diff}",
         ]
-    else:
-        pace = ""
+        proj = projection(used, elapsed, hours_until(reset_dt))
+        if proj:
+            lines.append(f"📈 {proj}")
 
     fields = []
     five = usage.get("five_hour")
@@ -222,7 +259,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
             fields.append({"name": label, "value": f"剩 **{100 - float(w['utilization']):.0f}%**", "inline": True})
     fields.append({"name": "🔄 下次重置", "value": discord_time(reset_dt), "inline": False})
 
-    if pace == "還有餘裕" and weekday_now(tz) in (4, 5):  # 週五、週六
+    if spare is not None and spare >= 3 and weekday_now(tz) in (4, 5):  # 週五、週六，而且有餘裕
         fields.append({"name": "🎉 週末加碼",
                        "value": weekend_message(used, elapsed, remaining, week.get("resets_at")),
                        "inline": False})
