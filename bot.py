@@ -221,29 +221,22 @@ def pace_tier(used: float, elapsed: float, budget: float = 100) -> tuple[float, 
     raise AssertionError("unreachable")
 
 
-def projection(used: float, elapsed: float, hours_to_reset: float,
-               hours_to_reserve: float | None = None) -> str | None:
-    """照目前的平均速度預估。有小討預備時，看週四中午前會不會吃到那 20%。"""
-    cap = 100 - RESERVE_PCT
-    if hours_to_reserve is not None and used >= cap:
-        return f"⚠️ 已經動用到小討預備額度了（多用了 {used - cap:.0f}%），小討能用的只剩 **{100 - used:.0f}%**"
+def projection(used: float, elapsed: float, hours_to_reset: float, reserve: float = 0) -> str | None:
+    """照目前的平均速度預估重置時會用到多少。reserve：已預扣給小討的量，直接算進去。"""
+    cap = 100 - reserve  # 小討以外可以用的總量
+    if reserve and used >= cap:
+        return "⚠️ 可用的額度已經用完了，再用下去就會用到週四小討的份"
     if elapsed < 3 or used <= 0:
         return None  # 週期剛開始，資料太少不準
     elapsed_hours = elapsed / 100 * WEEK_SECONDS / 3600
     rate = used / elapsed_hours  # 每小時用掉幾 %
-    if hours_to_reserve is not None:
-        at_deadline = used + rate * hours_to_reserve
-        if at_deadline <= cap:
-            return f"📈 照目前速度，到週四中午大約會用到 **{at_deadline:.0f}%**，小討的 {RESERVE_PCT}% 保得住 ✅"
-        hours_to_cap = (cap - used) / rate
-        return (f"📈 照目前速度，大約 **{fmt_left(hours_to_cap)}後**就會吃到小討預備額度"
-                f"（比週四中午早 {fmt_left(hours_to_reserve - hours_to_cap)}）")
-    projected = used / elapsed * 100
+    note = f"（含小討 {reserve:.0f}%）" if reserve else ""
+    projected = used / elapsed * 100 + reserve
     if projected <= 100:
-        return f"📈 照目前速度，重置時大約會用到 **{projected:.0f}%**"
-    hours_to_empty = (100 - used) / rate
-    return (f"📈 照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完"
-            f"（比重置早 {fmt_left(hours_to_reset - hours_to_empty)}）")
+        return f"📈 照目前速度，重置時大約會用到 **{projected:.0f}%**{note}"
+    hours_to_empty = (cap - used) / rate
+    return (f"📈 照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完{note}"
+            f"，比重置早 {fmt_left(hours_to_reset - hours_to_empty)}")
 
 
 def usage_bar(free: float, reserved: float) -> str:
@@ -266,15 +259,18 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
     color = 0x2ECC71 if free >= 50 else 0xF1C40F if free >= 20 else 0xE74C3C
 
     elapsed = time_elapsed_pct(week.get("resets_at"))
-    lines = ["**📅 7 天總用量**", f"{usage_bar(free, reserved)}  **{remaining:.0f}%** 剩餘"]
     if deadline:
-        ts = int(deadline.timestamp())
-        lines += [
-            f"-# 已用 {used:.0f}%・🟪 {reserved:.0f}% 留給週四小討・可自由使用 **{free:.0f}%**",
-            f"📚 小討預備額度在 <t:{ts}:f>（<t:{ts}:R>）解除保留",
+        lines = [
+            "**📅 7 天總用量**",
+            f"{usage_bar(free, reserved)}  **{free:.0f}%** 可用",
+            f"-# 已用 {used:.0f}%・🟪 已預扣 {reserved:.0f}% 給週四小討",
         ]
     else:
-        lines.append(f"-# 已用 {used:.0f}%")
+        lines = [
+            "**📅 7 天總用量**",
+            f"{usage_bar(free, reserved)}  **{remaining:.0f}%** 剩餘",
+            f"-# 已用 {used:.0f}%",
+        ]
 
     spare = None
     if elapsed is not None:
@@ -282,7 +278,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
         diff = (f"比時間進度省了 {spare:.0f}%" if spare >= 0.5
                 else f"比時間進度多用了 {-spare:.0f}%" if spare <= -0.5 else "和時間進度一樣")
         if deadline:
-            diff += f"（以扣掉小討後的 {budget}% 計算）"
+            diff += f"（已扣掉小討的 {RESERVE_PCT}%）"
         lines += [
             "",
             "**⏳ 時間進度**",
@@ -293,7 +289,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
             pace_advice,
             f"-# {diff}",
         ]
-        proj = projection(used, elapsed, hours_until(reset_dt), hours_until(deadline) if deadline else None)
+        proj = projection(used, elapsed, hours_until(reset_dt), RESERVE_PCT if deadline else 0)
         if proj:
             lines.append(proj)
 
@@ -312,7 +308,8 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
     if warn:
         fields.append({"name": "🔑 GH_PAT 快過期了", "value": warn, "inline": False})
 
-    title = f"本週還剩 {remaining:.0f}%" + (f"（可自由用 {free:.0f}%）" if deadline else "")
+    title = (f"本週可用 {free:.0f}%（已預扣小討 {reserved:.0f}%）" if deadline
+             else f"本週還剩 {remaining:.0f}%")
     mention = f"<@{user_id}> " if user_id else ""
     return {
         "content": (f"{mention}☀️ 午安！中午的 Claude 用量報告來了" if is_noon
