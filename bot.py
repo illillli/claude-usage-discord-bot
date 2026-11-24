@@ -169,18 +169,35 @@ def weekday_now(tz: ZoneInfo) -> int:
     return int(fake) if fake else datetime.now(tz).weekday()
 
 
-def weekend_message(used: float, elapsed: float, remaining: float, resets_at: str | None) -> str:
-    spare = elapsed - used  # 比時間進度少用了幾個百分點
+def weekend_message(spare: float, free: float, resets_at: str | None) -> str:
     days_left = hours_until(to_dt(resets_at)) / 24
     msg = f"你比時間進度少用了約 **{spare:.0f}%**，可以放心多做一點事！"
     if days_left >= 1:
-        msg += f"\n距離重置還有 {days_left:.1f} 天，平均每天可以用 **{remaining / days_left:.0f}%**。"
+        msg += f"\n距離重置還有 {days_left:.1f} 天，平均每天可以用 **{free / days_left:.0f}%**。"
     else:
         msg += "\n不到一天就重置了，剩下的額度不用就浪費囉！"
     return msg
 
 
-# 使用節奏等級：spare = 時間進度 − 用量（正的代表比時間省、負的代表用太快）
+# 小討預備：每週四中午 12:00 前，先保留一週用量的 20% 不算在可自由使用的額度裡
+RESERVE_PCT = 20
+RESERVE_WEEKDAY = 3  # 0=週一 … 3=週四
+RESERVE_HOUR = 12
+
+
+def reserve_deadline(tz: ZoneInfo, reset_dt: datetime | None) -> datetime | None:
+    """下一個週四 12:00；如果它在這次重置之後（不屬於這一週）就回 None，代表現在不用保留。"""
+    now = datetime.now(tz)
+    days_ahead = (RESERVE_WEEKDAY - now.weekday()) % 7
+    deadline = (now + timedelta(days=days_ahead)).replace(hour=RESERVE_HOUR, minute=0, second=0, microsecond=0)
+    if deadline <= now:
+        deadline += timedelta(days=7)
+    if reset_dt and deadline > reset_dt:
+        return None
+    return deadline
+
+
+# 使用節奏等級：spare = 照時間應該用到的量 − 實際用量（正的代表比時間省、負的代表用太快）
 PACE_TIERS = [
     (25, "🤩", "超級有餘裕", "額度多到用不完，放心大膽地用！"),
     (10, "🟢", "很有餘裕", "可以多開幾個任務，用起來！"),
@@ -192,8 +209,9 @@ PACE_TIERS = [
 ]
 
 
-def pace_tier(used: float, elapsed: float) -> tuple[float, str, str, str]:
-    spare = elapsed - used
+def pace_tier(used: float, elapsed: float, budget: float = 100) -> tuple[float, str, str, str]:
+    """budget：這一週可以自由使用的總量（有小討預備時是 80）。"""
+    spare = elapsed * budget / 100 - used
     # 週期剛開始（前 10% 的時間）用一點點很正常，不急著說用太快
     if elapsed < 10 and used <= 15:
         return spare, "🌱", "新的一週", "額度剛重置，盡情用吧！"
@@ -203,17 +221,36 @@ def pace_tier(used: float, elapsed: float) -> tuple[float, str, str, str]:
     raise AssertionError("unreachable")
 
 
-def projection(used: float, elapsed: float, hours_to_reset: float) -> str | None:
-    """照目前的平均速度，預估重置時會用到多少、或多久之後會用完。"""
+def projection(used: float, elapsed: float, hours_to_reset: float,
+               hours_to_reserve: float | None = None) -> str | None:
+    """照目前的平均速度預估。有小討預備時，看週四中午前會不會吃到那 20%。"""
+    cap = 100 - RESERVE_PCT
+    if hours_to_reserve is not None and used >= cap:
+        return f"⚠️ 已經動用到小討預備額度了（多用了 {used - cap:.0f}%），小討能用的只剩 **{100 - used:.0f}%**"
     if elapsed < 3 or used <= 0:
         return None  # 週期剛開始，資料太少不準
+    elapsed_hours = elapsed / 100 * WEEK_SECONDS / 3600
+    rate = used / elapsed_hours  # 每小時用掉幾 %
+    if hours_to_reserve is not None:
+        at_deadline = used + rate * hours_to_reserve
+        if at_deadline <= cap:
+            return f"📈 照目前速度，到週四中午大約會用到 **{at_deadline:.0f}%**，小討的 {RESERVE_PCT}% 保得住 ✅"
+        hours_to_cap = (cap - used) / rate
+        return (f"📈 照目前速度，大約 **{fmt_left(hours_to_cap)}後**就會吃到小討預備額度"
+                f"（比週四中午早 {fmt_left(hours_to_reserve - hours_to_cap)}）")
     projected = used / elapsed * 100
     if projected <= 100:
-        return f"照目前速度，重置時大約會用到 **{projected:.0f}%**"
-    elapsed_hours = elapsed / 100 * WEEK_SECONDS / 3600
-    hours_to_empty = (100 - used) / (used / elapsed_hours)
-    return (f"照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完"
+        return f"📈 照目前速度，重置時大約會用到 **{projected:.0f}%**"
+    hours_to_empty = (100 - used) / rate
+    return (f"📈 照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完"
             f"（比重置早 {fmt_left(hours_to_reset - hours_to_empty)}）")
+
+
+def usage_bar(free: float, reserved: float) -> str:
+    """🟩/🟨/🟥 可自由使用、🟪 小討預備、⬛ 已用掉。"""
+    fb = max(0, min(BLOCKS, round(free / 100 * BLOCKS)))
+    rb = max(0, min(BLOCKS - fb, round(reserved / 100 * BLOCKS)))
+    return level_square(free) * fb + "🟪" * rb + "⬛" * (BLOCKS - fb - rb)
 
 
 def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None,
@@ -222,19 +259,30 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
     used = float(week.get("utilization") or 0)
     remaining = max(0.0, 100 - used)
     reset_dt = to_dt(week.get("resets_at"))
-    color = 0x2ECC71 if remaining >= 50 else 0xF1C40F if remaining >= 20 else 0xE74C3C
+    deadline = reserve_deadline(tz, reset_dt)
+    reserved = min(RESERVE_PCT, remaining) if deadline else 0.0
+    free = remaining - reserved
+    budget = 100 - RESERVE_PCT if deadline else 100
+    color = 0x2ECC71 if free >= 50 else 0xF1C40F if free >= 20 else 0xE74C3C
 
     elapsed = time_elapsed_pct(week.get("resets_at"))
-    lines = [
-        "**📅 7 天總用量**",
-        f"{emoji_bar(remaining, level_square(remaining))}  **{remaining:.0f}%** 剩餘",
-        f"-# 已用 {used:.0f}%",
-    ]
+    lines = ["**📅 7 天總用量**", f"{usage_bar(free, reserved)}  **{remaining:.0f}%** 剩餘"]
+    if deadline:
+        ts = int(deadline.timestamp())
+        lines += [
+            f"-# 已用 {used:.0f}%・🟪 {reserved:.0f}% 留給週四小討・可自由使用 **{free:.0f}%**",
+            f"📚 小討預備額度在 <t:{ts}:f>（<t:{ts}:R>）解除保留",
+        ]
+    else:
+        lines.append(f"-# 已用 {used:.0f}%")
+
     spare = None
     if elapsed is not None:
-        spare, pace_icon, pace_label, pace_advice = pace_tier(used, elapsed)
+        spare, pace_icon, pace_label, pace_advice = pace_tier(used, elapsed, budget)
         diff = (f"比時間進度省了 {spare:.0f}%" if spare >= 0.5
                 else f"比時間進度多用了 {-spare:.0f}%" if spare <= -0.5 else "和時間進度一樣")
+        if deadline:
+            diff += f"（以扣掉小討後的 {budget}% 計算）"
         lines += [
             "",
             "**⏳ 時間進度**",
@@ -245,14 +293,11 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
             pace_advice,
             f"-# {diff}",
         ]
-        proj = projection(used, elapsed, hours_until(reset_dt))
+        proj = projection(used, elapsed, hours_until(reset_dt), hours_until(deadline) if deadline else None)
         if proj:
-            lines.append(f"📈 {proj}")
+            lines.append(proj)
 
     fields = []
-    five = usage.get("five_hour")
-    if five and five.get("utilization") is not None:
-        fields.append({"name": "⚡ 5 小時", "value": f"剩 **{100 - float(five['utilization']):.0f}%**", "inline": True})
     for key, label in [("seven_day_sonnet", "🎼 Sonnet 週額度"), ("seven_day_opus", "💎 Opus 週額度")]:
         w = usage.get(key)
         if w and w.get("utilization") is not None:
@@ -261,12 +306,13 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
 
     if spare is not None and spare >= 3 and weekday_now(tz) in (4, 5):  # 週五、週六，而且有餘裕
         fields.append({"name": "🎉 週末加碼",
-                       "value": weekend_message(used, elapsed, remaining, week.get("resets_at")),
+                       "value": weekend_message(spare, free, week.get("resets_at")),
                        "inline": False})
     warn = pat_warning(pat_days_left)
     if warn:
         fields.append({"name": "🔑 GH_PAT 快過期了", "value": warn, "inline": False})
 
+    title = f"本週還剩 {remaining:.0f}%" + (f"（可自由用 {free:.0f}%）" if deadline else "")
     mention = f"<@{user_id}> " if user_id else ""
     return {
         "content": (f"{mention}☀️ 午安！中午的 Claude 用量報告來了" if is_noon
@@ -274,7 +320,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
             "author": {"name": "Claude 用量小幫手"},
-            "title": f"本週還剩 {remaining:.0f}%",
+            "title": title,
             "description": "\n".join(lines),
             "color": color,
             "fields": fields,
