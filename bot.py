@@ -230,13 +230,13 @@ def projection(used: float, elapsed: float, hours_to_reset: float, reserve: floa
         return None  # 週期剛開始，資料太少不準
     elapsed_hours = elapsed / 100 * WEEK_SECONDS / 3600
     rate = used / elapsed_hours  # 每小時用掉幾 %
-    note = f"（含小討 {reserve:.0f}%）" if reserve else ""
+    # 週四小討前：假設小討會吃掉 reserve，其餘照目前步調；小討後 reserve=0，單純照步調
     projected = used / elapsed * 100 + reserve
     if projected <= 100:
-        return f"📈 照目前速度，重置時大約會用到 **{projected:.0f}%**{note}"
+        return f"📈 照目前速度，重置時大約會用到 **{projected:.0f}%**"
     hours_to_empty = (cap - used) / rate
-    return (f"📈 照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完{note}"
-            f"，比重置早 {fmt_left(hours_to_reset - hours_to_empty)}")
+    return (f"📈 照目前速度，大約 **{fmt_left(hours_to_empty)}後**會用完"
+            f"（比重置早 {fmt_left(hours_to_reset - hours_to_empty)}）")
 
 
 def usage_bar(free: float, reserved: float) -> str:
