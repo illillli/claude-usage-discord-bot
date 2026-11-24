@@ -180,7 +180,8 @@ def weekend_message(used: float, elapsed: float, remaining: float, resets_at: st
     return msg
 
 
-def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None) -> dict:
+def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None,
+                  is_noon: bool = False) -> dict:
     week = usage.get("seven_day") or {}
     used = float(week.get("utilization") or 0)
     remaining = max(0.0, 100 - used)
@@ -231,7 +232,8 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
 
     mention = f"<@{user_id}> " if user_id else ""
     return {
-        "content": f"{mention}🌙 晚安！今天的 Claude 用量報告來了",
+        "content": (f"{mention}☀️ 午安！中午的 Claude 用量報告來了" if is_noon
+                    else f"{mention}🌙 晚安！今天的 Claude 用量報告來了"),
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
             "author": {"name": "Claude 用量小幫手"},
@@ -239,7 +241,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
             "description": "\n".join(lines),
             "color": color,
             "fields": fields,
-            "footer": {"text": "每天 23:00 自動回報"},
+            "footer": {"text": "每天 12:00、23:00 自動回報"},
             "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
         }],
     }
@@ -345,14 +347,34 @@ def report_day(now: datetime) -> str:
     return (now - timedelta(hours=12)).date().isoformat()
 
 
+# 發送時段：中午 12:00（11:00–15:00 內都算）、晚上 23:00（22:00–03:00 內都算）
+def slot_name(now: datetime) -> str | None:
+    if 11 <= now.hour < 15:
+        return "noon"
+    if now.hour >= 22 or now.hour < 3:
+        return "night"
+    return None
+
+
+def report_slot(now: datetime) -> str | None:
+    """這次報告的唯一代號，例如 2026-11-24-noon、2026-11-24-night，用來防止重複發送。"""
+    slot = slot_name(now)
+    if slot == "noon":
+        return f"{now.date().isoformat()}-noon"
+    if slot == "night":
+        return f"{report_day(now)}-night"
+    return None
+
+
 def should_skip(now: datetime) -> str | None:
     """自動觸發可能會重複或很晚才來，這裡擋掉。回傳跳過的原因，None 代表要發。"""
     if os.environ.get("FORCE") == "1":
         return None
-    if not (now.hour >= 22 or now.hour < 3):
-        return f"現在 {now:%H:%M} 不在 22:00–03:00 的發送時段"
-    if os.environ.get("LAST_SENT_DAY", "").strip() == report_day(now):
-        return f"{report_day(now)} 的報告已經發過了"
+    key = report_slot(now)
+    if key is None:
+        return f"現在 {now:%H:%M} 不在發送時段（11:00–15:00、22:00–03:00）"
+    if os.environ.get("LAST_SENT_SLOT", "").strip() == key:
+        return f"{key} 的報告已經發過了"
     return None
 
 
@@ -379,7 +401,9 @@ def main() -> int:
             }
         else:
             usage = get_usage(get_access_token())
-        payload = build_message(usage, user_id, tz, pat_days_left)
+        # 手動 force 或時段外執行時，就看現在是白天還是晚上
+        is_noon = (slot_name(now) or ("noon" if 6 <= now.hour < 18 else "night")) == "noon"
+        payload = build_message(usage, user_id, tz, pat_days_left, is_noon)
         ok = True
     except Exception as e:  # noqa: BLE001 - 失敗也要通知
         payload = build_error_message(e, user_id, pat_days_left)
@@ -395,8 +419,8 @@ def main() -> int:
         delete_previous_message()
         if new_id and save_secret("LAST_DISCORD_MESSAGE_ID", new_id):
             print("已記下這則訊息的 ID，下次會刪掉它。")
-        if os.environ.get("FORCE") != "1":
-            save_secret("LAST_SENT_DAY", report_day(now))
+        if os.environ.get("FORCE") != "1" and report_slot(now):
+            save_secret("LAST_SENT_SLOT", report_slot(now))
     return 0 if ok else 1
 
 

@@ -1,6 +1,6 @@
 name: Daily Claude usage report
 
-# 主要由 cron-job.org 每天 23:00 用 workflow_dispatch 觸發；
+# 主要由 cron-job.org 每天 12:00、23:00 用 workflow_dispatch 觸發；
 # backup.yml 的 GitHub 排程只是備援（會呼叫這個 workflow）。
 # 這裡刻意不放 schedule：public repo 60 天沒活動時，含排程的 workflow 會被停用，
 # 拆開之後就算 backup.yml 被停用，這個主流程還是能被 cron-job.org 觸發。
@@ -38,7 +38,7 @@ jobs:
           # 上一則訊息的 ID，bot 會自動維護，用來刪掉舊訊息
           LAST_DISCORD_MESSAGE_ID: ${{ secrets.LAST_DISCORD_MESSAGE_ID }}
           # 最後一次發報告是哪一天，用來避免重複發送
-          LAST_SENT_DAY: ${{ secrets.LAST_SENT_DAY }}
+          LAST_SENT_SLOT: ${{ secrets.LAST_SENT_SLOT }}
           FORCE: ${{ inputs.force && '1' || '' }}
           # 用來把輪替後的 refresh token 寫回 Secret（需要 Secrets 讀寫權限的 PAT）
           GH_TOKEN: ${{ secrets.GH_PAT }}

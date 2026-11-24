@@ -1,6 +1,6 @@
 # Claude 用量 Discord 提醒
 
-每天台灣時間 23:00，用 GitHub Actions 到 Discord 頻道 @ 你一次，告訴你 Claude 的 7 天用量還剩多少（也會附上 5 小時、Sonnet/Opus 的分項）。
+每天台灣時間 12:00 和 23:00，用 GitHub Actions 到 Discord 頻道 @ 你一次，告訴你 Claude 的 7 天用量還剩多少（也會附上 5 小時、Sonnet/Opus 的分項）。
 
 - 跑在 GitHub 的伺服器上，電腦關機也會照常發
 - 用 Discord Webhook 發訊息，不用架 bot 伺服器
@@ -70,14 +70,14 @@ python bot.py --fake --dry-run
 ## 小提醒
 
 - 要改發送時間：改 cron-job.org 上的時間，以及 `.github/workflows/backup.yml` 的備援 `cron`（UTC 時間，台灣要減 8 小時）。
-- `bot.py` 只會在 22:00–03:00 發送，改時間的話也要改 `should_skip()` 裡的時段。
+- `bot.py` 只會在 11:00–15:00（中午）和 22:00–03:00（晚上）發送，改時間的話也要改 `slot_name()` 裡的時段。
 
 ## 排程怎麼運作
 
 GitHub 的免費排程常常被延後好幾個小時，甚至直接跳過，所以：
-- **主要**：[cron-job.org](https://cron-job.org) 每天 23:00 準時呼叫 GitHub 跑 `daily.yml`。
-- **備援**：`backup.yml` 用 GitHub 自己的排程在 23:13、23:43、00:13 各試一次。
-- `bot.py` 會自動擋掉同一天的重複發送，以及 22:00–03:00 以外的時段，所以不會收到兩則。
+- **主要**：[cron-job.org](https://cron-job.org) 每天 12:00、23:00 準時呼叫 GitHub 跑 `daily.yml`。
+- **備援**：`backup.yml` 用 GitHub 自己的排程在 12:13、12:43、23:13、23:43、00:13 各試一次。
+- `bot.py` 會自動擋掉同一個時段的重複發送，以及上面兩個時段以外的時間，所以每個時段只會收到一則。
 
 `daily.yml` 刻意不放排程：public repo 60 天沒有 commit 時，GitHub 會停用含排程的 workflow，拆開後就算 `backup.yml` 被停用，cron-job.org 還是能正常觸發。
 
@@ -86,7 +86,7 @@ cron-job.org 的設定方式：
 1. GitHub 建一把新的 fine-grained token：只選這個 repo，權限只要 **Actions: Read and write**。
 2. cron-job.org 註冊後新增 Cronjob：
    - URL：`https://api.github.com/repos/illillli/claude-usage-discord-bot/actions/workflows/daily.yml/dispatches`
-   - 時間：每天 23:00，時區選 Asia/Taipei
+   - 時間：每天 23:00，時區選 Asia/Taipei（中午 12:00 再建一個一樣的排程）
    - Advanced → Request method 選 **POST**
    - Headers：`Authorization: Bearer <剛剛的 token>`、`Accept: application/vnd.github+json`
    - Request body：`{"ref":"main"}`
