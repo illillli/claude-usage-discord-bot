@@ -11,6 +11,15 @@ on:
         description: "不管時段、今天有沒有發過，都直接發一次（測試用）"
         type: boolean
         default: false
+      # 以下兩個由 worker/（Discord /usage 指令）自動帶入，手動跑時留空
+      interaction_token:
+        description: "Discord 互動 token（/usage 指令用，手動跑請留空）"
+        type: string
+        default: ""
+      application_id:
+        description: "Discord Application ID（/usage 指令用，手動跑請留空）"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       force:
@@ -40,6 +49,9 @@ jobs:
           # 最後一次發報告是哪一天，用來避免重複發送
           LAST_SENT_SLOT: ${{ secrets.LAST_SENT_SLOT }}
           FORCE: ${{ inputs.force && '1' || '' }}
+          # 從 Discord /usage 觸發時，跑完要回覆那個指令
+          INTERACTION_TOKEN: ${{ github.event.inputs.interaction_token }}
+          DISCORD_APPLICATION_ID: ${{ github.event.inputs.application_id }}
           # 用來把輪替後的 refresh token 寫回 Secret（需要 Secrets 讀寫權限的 PAT）
           GH_TOKEN: ${{ secrets.GH_PAT }}
           TIMEZONE: Asia/Taipei

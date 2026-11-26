@@ -55,6 +55,49 @@ gh secret set GH_PAT --repo illillli/claude-usage-discord-bot
 
 GitHub repo → Actions → Daily Claude usage report → Run workflow。Discord 應該馬上收到訊息。
 
+## `/usage` 指令：隨時手動刷新
+
+在 Discord 任何地方打 `/usage`，bot 就會馬上重跑一次報告：刪掉舊的那則、在頻道發新的，再私下回你一句「已更新」。新報告不會 @ 你，也不會影響 12:00、23:00 的排程。GitHub Actions 開機要時間，大約 20～40 秒後才會看到新報告。
+
+運作方式：Discord → Cloudflare Worker（`worker/worker.js`）→ 觸發 `daily.yml`（force）→ `bot.py`。
+
+### 1. 建 Discord Application
+
+[Discord Developer Portal](https://discord.com/developers/applications) → New Application。
+- **General Information**：記下 **Application ID** 和 **Public Key**。
+- **Bot**：按 Reset Token，記下 **Bot Token**（只有註冊指令時用到，不用存進任何地方）。
+- **Installation**：Installation Contexts 勾 **User Install**，Install Link 選 Discord Provided Link，Default Install Settings 的 User Install 加上 `applications.commands`。複製 Install Link 打開，把它裝到自己的帳號。
+
+### 2. 建 GitHub token 給 Worker 用
+
+GitHub → Fine-grained tokens → 只選這個 repo，權限只要 **Actions: Read and write**（跟 cron-job.org 用的那把一樣，可以共用）。
+
+### 3. 部署 Cloudflare Worker
+
+[Cloudflare](https://dash.cloudflare.com) 註冊（免費）→ Workers & Pages → Create → **Start with Hello World!** → 取個名字 → Deploy → Edit code，把 `worker/worker.js` 整個貼上取代 → Deploy。
+
+到這個 Worker 的 Settings → Variables and Secrets 新增：
+
+| 名稱 | 值 | 類型 |
+|---|---|---|
+| `DISCORD_PUBLIC_KEY` | Application 的 Public Key | Text |
+| `DISCORD_APPLICATION_ID` | Application ID | Text |
+| `GITHUB_REPO` | `illillli/claude-usage-discord-bot` | Text |
+| `ALLOWED_USER_ID` | 你的 Discord 使用者 ID（只有你能用） | Text |
+| `GITHUB_TOKEN` | 第 2 步的 token | **Secret** |
+
+### 4. 把網址填回 Discord
+
+複製 Worker 的網址（`https://xxx.workers.dev`），貼到 Developer Portal → General Information → **Interactions Endpoint URL** → Save。Discord 會先驗證一次，存得起來就代表 Worker 設定正確。
+
+### 5. 註冊指令
+
+```powershell
+.\register-command.ps1
+```
+
+輸入 Application ID 和 Bot Token。完成後在 Discord 打 `/usage` 試試看（新指令有時要重開 Discord 才會出現）。
+
 ## 重新登入
 
 如果收到「換 access token 失敗」的訊息，代表 refresh token 失效了（例如 PAT 過期沒能寫回、或你在 claude.ai 登出所有裝置），重新跑一次第 5 步就好。

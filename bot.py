@@ -35,6 +35,8 @@ TOKEN_URLS = [
 ]
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USER_AGENT = "claude-usage-discord-bot/1.0"
+# Discord API 規定要用這種格式，不然會回 40333
+DISCORD_USER_AGENT = "DiscordBot (https://github.com/illillli/claude-usage-discord-bot, 1.0)"
 
 
 def http_json(url: str, *, data: dict | None = None, headers: dict | None = None) -> dict:
@@ -247,7 +249,7 @@ def usage_bar(free: float, reserved: float) -> str:
 
 
 def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float | None = None,
-                  is_noon: bool = False) -> dict:
+                  is_noon: bool = False, manual: bool = False) -> dict:
     week = usage.get("seven_day") or {}
     used = float(week.get("utilization") or 0)
     remaining = max(0.0, 100 - used)
@@ -310,10 +312,17 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
 
     title = (f"本週可用 {free:.0f}%（已預扣小討 {reserved:.0f}%）" if deadline
              else f"本週還剩 {remaining:.0f}%")
+    if manual:  # 自己下 /usage 指令，不用再 @ 自己
+        user_id = ""
     mention = f"<@{user_id}> " if user_id else ""
+    if manual:
+        content = "🔄 剛剛更新的 Claude 用量"
+    elif is_noon:
+        content = f"{mention}☀️ 午安！中午的 Claude 用量報告來了"
+    else:
+        content = f"{mention}🌙 晚安！今天的 Claude 用量報告來了"
     return {
-        "content": (f"{mention}☀️ 午安！中午的 Claude 用量報告來了" if is_noon
-                    else f"{mention}🌙 晚安！今天的 Claude 用量報告來了"),
+        "content": content,
         "allowed_mentions": {"users": [user_id] if user_id else []},
         "embeds": [{
             "author": {"name": "Claude 用量小幫手"},
@@ -422,6 +431,22 @@ def delete_previous_message() -> None:
             print(f"刪除上一則訊息失敗：HTTP {e.code}", file=sys.stderr)
 
 
+def reply_interaction(content: str) -> None:
+    """回覆 Discord /usage 指令（把「思考中…」那則改成結果，只有下指令的人看得到）。"""
+    token = os.environ.get("INTERACTION_TOKEN", "").strip()
+    app_id = os.environ.get("DISCORD_APPLICATION_ID", "").strip()
+    if not (token and app_id):
+        return
+    url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
+    req = urllib.request.Request(url, data=json.dumps({"content": content}).encode(), method="PATCH",
+                                 headers={"User-Agent": DISCORD_USER_AGENT, "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=15).close()
+    except urllib.error.HTTPError as e:
+        # 互動 token 15 分鐘就過期，回不了也不影響報告本身
+        print(f"回覆 /usage 指令失敗：HTTP {e.code}", file=sys.stderr)
+
+
 def report_day(now: datetime) -> str:
     """這次報告算哪一天的：往回推 12 小時，所以凌晨晚到的觸發還算前一天。"""
     return (now - timedelta(hours=12)).date().isoformat()
@@ -464,6 +489,8 @@ def main() -> int:
     tz = ZoneInfo(os.environ.get("TIMEZONE") or "Asia/Taipei")
     user_id = os.environ.get("DISCORD_USER_ID", "").strip()
     now = datetime.now(tz)
+    mask(os.environ.get("INTERACTION_TOKEN", "").strip())
+    manual = bool(os.environ.get("INTERACTION_TOKEN", "").strip()) or os.environ.get("FAKE_MANUAL") == "1"
     if not dry_run and (reason := should_skip(now)):
         print(f"跳過：{reason}。")
         return 0
@@ -483,7 +510,7 @@ def main() -> int:
             usage = get_usage(get_access_token())
         # 手動 force 或時段外執行時，就看現在是白天還是晚上
         is_noon = (slot_name(now) or ("noon" if 6 <= now.hour < 18 else "night")) == "noon"
-        payload = build_message(usage, user_id, tz, pat_days_left, is_noon)
+        payload = build_message(usage, user_id, tz, pat_days_left, is_noon, manual)
         ok = True
     except Exception as e:  # noqa: BLE001 - 失敗也要通知
         payload = build_error_message(e, user_id, pat_days_left)
@@ -501,6 +528,8 @@ def main() -> int:
             print("已記下這則訊息的 ID，下次會刪掉它。")
         if os.environ.get("FORCE") != "1" and report_slot(now):
             save_secret("LAST_SENT_SLOT", report_slot(now))
+        reply_interaction("✅ 已更新，最新的用量報告在頻道裡。" if ok
+                          else "⚠️ 抓不到用量，錯誤訊息已經發在頻道裡。")
     return 0 if ok else 1
 
 
