@@ -48,6 +48,9 @@ jobs:
           LAST_DISCORD_MESSAGE_ID: ${{ secrets.LAST_DISCORD_MESSAGE_ID }}
           # 最後一次發報告是哪一天，用來避免重複發送
           LAST_SENT_SLOT: ${{ secrets.LAST_SENT_SLOT }}
+          # 5 小時用滿 ≈ 週額度幾 %（bot 自動校正），以及校正用的上次用量快照
+          FIVE_HOUR_RATIO: ${{ secrets.FIVE_HOUR_RATIO }}
+          USAGE_SNAPSHOT: ${{ secrets.USAGE_SNAPSHOT }}
           FORCE: ${{ inputs.force && '1' || '' }}
           # 從 Discord /usage 觸發時，跑完要回覆那個指令
           INTERACTION_TOKEN: ${{ github.event.inputs.interaction_token }}

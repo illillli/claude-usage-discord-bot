@@ -241,6 +241,131 @@ def projection(used: float, elapsed: float, hours_to_reset: float, reserve: floa
             f"（比重置早 {fmt_left(hours_to_reset - hours_to_empty)}）")
 
 
+# ── 5 小時額度換算 ──────────────────────────────────────────────
+# 一個 5 小時視窗用滿（100%）大約等於週額度的幾 %。Anthropic 沒公布，各方案也不同，
+# 所以先用預設值，之後由 learn_ratio() 從實際數據自動校正（存在 FIVE_HOUR_RATIO 這個 Secret）。
+DEFAULT_FIVE_HOUR_RATIO = 15.0
+SLEEP_START, SLEEP_END = 0, 8  # 00:00–08:00 睡覺，不會用 Claude
+MIN_DELTA_5H = 10  # 5 小時用量至少增加這麼多才拿來校正，太少誤差太大
+
+
+def five_hour_ratio() -> float:
+    try:
+        r = float(os.environ.get("FIVE_HOUR_RATIO", "").strip())
+        if 0.5 <= r <= 100:
+            return r
+    except ValueError:
+        pass
+    return DEFAULT_FIVE_HOUR_RATIO
+
+
+def ratio_is_learned() -> bool:
+    return bool(os.environ.get("FIVE_HOUR_RATIO", "").strip())
+
+
+def same_time(a: str | None, b: str | None, tol_min: float = 10) -> bool:
+    da, db = to_dt(a), to_dt(b)
+    return bool(da and db and abs((da - db).total_seconds()) <= tol_min * 60)
+
+
+def learn_ratio(usage: dict) -> tuple[dict, float | None]:
+    """跟上次的快照比：同一個 5 小時視窗、同一週內，用「週用量增加 ÷ 5 小時用量增加」算比例。
+    回傳 (這次的快照, 新的比例或 None)。"""
+    five = usage.get("five_hour") or {}
+    week = usage.get("seven_day") or {}
+    snap = {"r5": five.get("resets_at"), "u5": five.get("utilization"),
+            "r7": week.get("resets_at"), "u7": week.get("utilization")}
+    try:
+        prev = json.loads(os.environ.get("USAGE_SNAPSHOT", "") or "{}")
+    except json.JSONDecodeError:
+        prev = {}
+    if None in (snap["u5"], snap["u7"], prev.get("u5"), prev.get("u7")):
+        return snap, None
+    if not (same_time(prev.get("r5"), snap["r5"]) and same_time(prev.get("r7"), snap["r7"], 60)):
+        return snap, None
+    d5 = float(snap["u5"]) - float(prev["u5"])
+    d7 = float(snap["u7"]) - float(prev["u7"])
+    if d5 < MIN_DELTA_5H or d7 < 0:
+        return snap, None
+    sample = d7 / d5 * 100
+    if not 0.5 <= sample <= 100:
+        return snap, None
+    # 跟舊值做加權平均，避免一次的誤差影響太大
+    new = sample if not ratio_is_learned() else five_hour_ratio() * 0.6 + sample * 0.4
+    return snap, round(new, 2)
+
+
+def awake_windows(now: datetime, five: dict, reset_dt: datetime | None) -> float:
+    """到週重置前，醒著的時間（扣掉 00:00–08:00）最多還能用掉幾個「5 小時用滿」。
+    寬鬆估計：只要視窗是在醒著時開始的就算能用滿，所以如果剩餘量比這個還多，就是確定用不完。"""
+    if not reset_dt:
+        return 0.0
+    tz = now.tzinfo
+    reset_dt = reset_dt.astimezone(tz)
+
+    def awake(t: datetime) -> bool:
+        return not (SLEEP_START <= t.hour < SLEEP_END)
+
+    def next_awake(t: datetime) -> datetime:
+        return t if awake(t) else t.replace(hour=SLEEP_END, minute=0, second=0, microsecond=0)
+
+    count = 0.0
+    t = now
+    r5 = to_dt(five.get("resets_at"))
+    if r5 and r5 > now:  # 現在這個 5 小時視窗還沒結束，剩下的部分也算進去
+        if awake(now):
+            count += max(0.0, 100 - float(five.get("utilization") or 0)) / 100
+        t = r5.astimezone(tz)
+    while True:
+        t = next_awake(t)
+        if t >= reset_dt:
+            break
+        count += 1
+        t += timedelta(hours=5)
+    return count
+
+
+def surplus_info(usage: dict, tz: ZoneInfo) -> dict | None:
+    """剩餘週額度換算成幾個 5 小時用滿，以及到重置前醒著最多還能用掉幾個。"""
+    week = usage.get("seven_day") or {}
+    reset_dt = to_dt(week.get("resets_at"))
+    if not reset_dt:
+        return None
+    remaining = max(0.0, 100 - float(week.get("utilization") or 0))
+    ratio = five_hour_ratio()
+    capacity = awake_windows(datetime.now(tz), usage.get("five_hour") or {}, reset_dt)
+    return {
+        "ratio": ratio,
+        "remaining_windows": remaining / ratio,
+        "capacity": capacity,
+        "cannot_finish": remaining / ratio > capacity,
+        "leftover_pct": max(0.0, remaining - capacity * ratio),
+    }
+
+
+def surplus_field(info: dict, free: float, reserved: float) -> dict:
+    ratio_note = (f"5 小時用滿 ≈ 週額度 {info['ratio']:.1f}%" if ratio_is_learned()
+                  else f"先假設 5 小時用滿 ≈ 週額度 {info['ratio']:.0f}%，之後會依實際數據自動校正")
+    lines = [f"可自由用的 **{free:.0f}%** ≈ **{free / info['ratio']:.1f} 個**「5 小時用滿」"]
+    if reserved:
+        lines[0] += f"（另有小討 {reserved:.0f}% ≈ {reserved / info['ratio']:.1f} 個）"
+    lines.append(f"到重置前扣掉睡覺時間，最多還能用滿約 **{info['capacity']:.1f} 個**")
+    if info["cannot_finish"]:
+        lines.append(f"🔥 就算每個 5 小時都用滿，還是會剩下約 **{info['leftover_pct']:.0f}%**")
+    lines.append(f"-# {ratio_note}")
+    return {"name": "🧮 換算成 5 小時額度", "value": "\n".join(lines), "inline": False}
+
+
+def build_surplus_ping(info: dict, user_id: str) -> dict:
+    return {
+        "content": (f"<@{user_id}> 🔥 **這週的 Claude 額度確定用不完了！**\n"
+                    f"剩下的量 ≈ {info['remaining_windows']:.1f} 個「5 小時用滿」，"
+                    f"但到重置前醒著最多只能開約 {info['capacity']:.1f} 個，"
+                    f"至少會浪費 {info['leftover_pct']:.0f}%。大膽開任務吧！"),
+        "allowed_mentions": {"users": [user_id] if user_id else []},
+    }
+
+
 def usage_bar(free: float, reserved: float) -> str:
     """🟩/🟨/🟥 可自由使用、🟪 小討預備、⬛ 已用掉。"""
     fb = max(0, min(BLOCKS, round(free / 100 * BLOCKS)))
@@ -301,6 +426,10 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
         if w and w.get("utilization") is not None:
             fields.append({"name": label, "value": f"剩 **{100 - float(w['utilization']):.0f}%**", "inline": True})
     fields.append({"name": "🔄 下次重置", "value": discord_time(reset_dt), "inline": False})
+
+    info = surplus_info(usage, tz)
+    if info and ((spare is not None and spare >= 10) or info["cannot_finish"]):  # 很有餘裕以上才換算
+        fields.append(surplus_field(info, free, reserved))
 
     if spare is not None and spare >= 3 and weekday_now(tz) in (4, 5):  # 週五、週六，而且有餘裕
         fields.append({"name": "🎉 週末加碼",
@@ -417,18 +546,17 @@ def send_discord(payload: dict) -> str | None:
 
 def delete_previous_message() -> None:
     """刪掉上一則 bot 發的訊息（ID 存在 LAST_DISCORD_MESSAGE_ID 這個 Secret）。"""
-    old_id = os.environ.get("LAST_DISCORD_MESSAGE_ID", "").strip()
-    if not old_id:
-        return
-    req = urllib.request.Request(f"{webhook_url()}/messages/{old_id}", method="DELETE",
-                                 headers={"User-Agent": USER_AGENT})
-    try:
-        urllib.request.urlopen(req, timeout=15).close()
-        print("已刪除上一則訊息。")
-    except urllib.error.HTTPError as e:
-        # 404 = 已經被手動刪掉了，不用管
-        if e.code != 404:
-            print(f"刪除上一則訊息失敗：HTTP {e.code}", file=sys.stderr)
+    # 可能有多則（報告 + 用不完的額外提醒），用逗號分隔
+    for old_id in filter(None, (s.strip() for s in os.environ.get("LAST_DISCORD_MESSAGE_ID", "").split(","))):
+        req = urllib.request.Request(f"{webhook_url()}/messages/{old_id}", method="DELETE",
+                                     headers={"User-Agent": USER_AGENT})
+        try:
+            urllib.request.urlopen(req, timeout=15).close()
+            print("已刪除上一則訊息。")
+        except urllib.error.HTTPError as e:
+            # 404 = 已經被手動刪掉了，不用管
+            if e.code != 404:
+                print(f"刪除上一則訊息失敗：HTTP {e.code}", file=sys.stderr)
 
 
 def reply_interaction(content: str) -> None:
@@ -500,9 +628,11 @@ def main() -> int:
 
     try:
         if fake:
+            fake_used = float(os.environ.get("FAKE_USED") or 63)
+            fake_days = float(os.environ.get("FAKE_DAYS_LEFT") or 2)
             usage = {
-                "five_hour": {"utilization": 12.0, "resets_at": "2099-01-01T00:00:00+00:00"},
-                "seven_day": {"utilization": 63.0, "resets_at": (datetime.now(tz) + timedelta(days=2)).replace(microsecond=0).isoformat()},
+                "five_hour": {"utilization": 12.0, "resets_at": (datetime.now(tz) + timedelta(hours=3)).replace(microsecond=0).isoformat()},
+                "seven_day": {"utilization": fake_used, "resets_at": (datetime.now(tz) + timedelta(days=fake_days)).replace(microsecond=0).isoformat()},
                 "seven_day_opus": None,
                 "seven_day_sonnet": {"utilization": 8.0, "resets_at": None},
             }
@@ -510,22 +640,39 @@ def main() -> int:
             usage = get_usage(get_access_token())
         # 手動 force 或時段外執行時，就看現在是白天還是晚上
         is_noon = (slot_name(now) or ("noon" if 6 <= now.hour < 18 else "night")) == "noon"
+        snapshot, new_ratio = (None, None) if fake else learn_ratio(usage)
+        if new_ratio is not None:
+            print(f"5 小時額度比例校正：{five_hour_ratio():.2f}% → {new_ratio:.2f}%")
+            os.environ["FIVE_HOUR_RATIO"] = str(new_ratio)  # 這次的報告就用新的值
         payload = build_message(usage, user_id, tz, pat_days_left, is_noon, manual)
+        info = surplus_info(usage, tz)
+        # 確定用不完時，自動報告多發一則再 @ 一次（自己下 /usage 就不用了）
+        ping = build_surplus_ping(info, user_id) if info and info["cannot_finish"] and not manual else None
         ok = True
     except Exception as e:  # noqa: BLE001 - 失敗也要通知
         payload = build_error_message(e, user_id, pat_days_left)
+        snapshot = new_ratio = ping = None
         ok = False
         print(f"錯誤：{e}", file=sys.stderr)
 
     if dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if ping:
+            print(json.dumps(ping, ensure_ascii=False, indent=2))
     else:
-        new_id = send_discord(payload)
+        new_ids = [send_discord(payload)]
+        if ping:
+            new_ids.append(send_discord(ping))
         print("已發送到 Discord。")
         # 新訊息發成功之後才刪舊的，避免兩則都不見
         delete_previous_message()
-        if new_id and save_secret("LAST_DISCORD_MESSAGE_ID", new_id):
+        new_ids = [i for i in new_ids if i]
+        if new_ids and save_secret("LAST_DISCORD_MESSAGE_ID", ",".join(new_ids)):
             print("已記下這則訊息的 ID，下次會刪掉它。")
+        if snapshot:
+            save_secret("USAGE_SNAPSHOT", json.dumps(snapshot))
+        if new_ratio is not None:
+            save_secret("FIVE_HOUR_RATIO", str(new_ratio))
         if os.environ.get("FORCE") != "1" and report_slot(now):
             save_secret("LAST_SENT_SLOT", report_slot(now))
         reply_interaction("✅ 已更新，最新的用量報告在頻道裡。" if ok

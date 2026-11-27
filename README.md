@@ -98,6 +98,12 @@ GitHub → Fine-grained tokens → 只選這個 repo，權限只要 **Actions: R
 
 輸入 Application ID 和 Bot Token。完成後在 Discord 打 `/usage` 試試看（新指令有時要重開 Discord 才會出現）。
 
+## 換算成 5 小時額度
+
+比時間進度省 10% 以上時，報告會多一欄「🧮 換算成 5 小時額度」：剩下的週額度相當於幾個「5 小時用滿」，以及到重置前扣掉睡覺時間（00:00–08:00）最多還能用滿幾個。如果就算每個 5 小時都用滿還是用不完，自動報告會再多發一則訊息 @ 你一次（`/usage` 手動刷新不會）。
+
+「5 小時用滿 ≈ 週額度幾 %」Anthropic 沒有公布，預設先用 15%。bot 每次執行都會把用量快照存進 `USAGE_SNAPSHOT`，只要兩次執行落在同一個 5 小時視窗、而且 5 小時用量增加了 10% 以上（例如中午報告後用了一陣子再打 `/usage`），就會用「週用量增加 ÷ 5 小時用量增加」校正比例，存進 `FIVE_HOUR_RATIO`。知道實際比例的話也可以直接設：`gh secret set FIVE_HOUR_RATIO --repo illillli/claude-usage-discord-bot`。
+
 ## 重新登入
 
 如果收到「換 access token 失敗」的訊息，代表 refresh token 失效了（例如 PAT 過期沒能寫回、或你在 claude.ai 登出所有裝置），重新跑一次第 5 步就好。
