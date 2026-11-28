@@ -345,9 +345,10 @@ def surplus_info(usage: dict, tz: ZoneInfo) -> dict | None:
 
 def surplus_lines(info: dict, free: float, after_reserve: bool) -> list[str]:
     """加在報告內文的幾行；「醒著最多用幾個」只在週四小討結算後才顯示。"""
-    lines = [f"🧮 5 小時換算：剩 **{free / info['ratio']:.1f} 個**"]
+    line = f"🧮 5 小時換算：剩 **{free / info['ratio']:.1f} 個**"
     if after_reserve:
-        lines.append(f"醒著最多用 **{info['capacity']:.1f} 個**")
+        line += f" / 最多用 **{info['capacity']:.1f} 個**"
+    lines = [line]
     if info["cannot_finish"]:
         lines.append(f"🔥 用不完，會剩約 {info['leftover_pct']:.0f}%")
     return lines
