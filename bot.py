@@ -344,24 +344,17 @@ def surplus_info(usage: dict, tz: ZoneInfo) -> dict | None:
 
 
 def surplus_field(info: dict, free: float, reserved: float) -> dict:
-    ratio_note = (f"5 小時用滿 ≈ 週額度 {info['ratio']:.1f}%" if ratio_is_learned()
-                  else f"先假設 5 小時用滿 ≈ 週額度 {info['ratio']:.0f}%，之後會依實際數據自動校正")
-    lines = [f"可自由用的 **{free:.0f}%** ≈ **{free / info['ratio']:.1f} 個**「5 小時用滿」"]
-    if reserved:
-        lines[0] += f"（另有小討 {reserved:.0f}% ≈ {reserved / info['ratio']:.1f} 個）"
-    lines.append(f"到重置前扣掉睡覺時間，最多還能用滿約 **{info['capacity']:.1f} 個**")
+    lines = [f"剩 **{free / info['ratio']:.1f} 個**・醒著最多用 **{info['capacity']:.1f} 個**"]
     if info["cannot_finish"]:
-        lines.append(f"🔥 就算每個 5 小時都用滿，還是會剩下約 **{info['leftover_pct']:.0f}%**")
-    lines.append(f"-# {ratio_note}")
-    return {"name": "🧮 換算成 5 小時額度", "value": "\n".join(lines), "inline": False}
+        lines.append(f"🔥 用不完，會剩約 {info['leftover_pct']:.0f}%")
+    lines.append(f"-# 1 個 ≈ 週額度 {info['ratio']:.0f}%{'' if ratio_is_learned() else '（預設）'}")
+    return {"name": "🧮 5 小時換算", "value": "\n".join(lines), "inline": False}
 
 
 def build_surplus_ping(info: dict, user_id: str) -> dict:
     return {
-        "content": (f"<@{user_id}> 🔥 **這週的 Claude 額度確定用不完了！**\n"
-                    f"剩下的量 ≈ {info['remaining_windows']:.1f} 個「5 小時用滿」，"
-                    f"但到重置前醒著最多只能開約 {info['capacity']:.1f} 個，"
-                    f"至少會浪費 {info['leftover_pct']:.0f}%。大膽開任務吧！"),
+        "content": (f"<@{user_id}> 🔥 **這週額度確定用不完！**"
+                    f"剩 {info['remaining_windows']:.1f} 個 5 小時、最多只能用 {info['capacity']:.1f} 個，大膽開任務吧！"),
         "allowed_mentions": {"users": [user_id] if user_id else []},
     }
 
