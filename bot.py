@@ -343,12 +343,14 @@ def surplus_info(usage: dict, tz: ZoneInfo) -> dict | None:
     }
 
 
-def surplus_field(info: dict, free: float, reserved: float) -> dict:
-    lines = [f"剩 **{free / info['ratio']:.1f} 個**・醒著最多用 **{info['capacity']:.1f} 個**"]
+def surplus_lines(info: dict, free: float, after_reserve: bool) -> list[str]:
+    """加在報告內文的幾行；「醒著最多用幾個」只在週四小討結算後才顯示。"""
+    lines = [f"🧮 5 小時換算：剩 **{free / info['ratio']:.1f} 個**"]
+    if after_reserve:
+        lines.append(f"醒著最多用 **{info['capacity']:.1f} 個**")
     if info["cannot_finish"]:
         lines.append(f"🔥 用不完，會剩約 {info['leftover_pct']:.0f}%")
-    lines.append(f"-# 1 個 ≈ 週額度 {info['ratio']:.0f}%{'' if ratio_is_learned() else '（預設）'}")
-    return {"name": "🧮 5 小時換算", "value": "\n".join(lines), "inline": False}
+    return lines
 
 
 def build_surplus_ping(info: dict, user_id: str) -> dict:
@@ -422,7 +424,7 @@ def build_message(usage: dict, user_id: str, tz: ZoneInfo, pat_days_left: float 
 
     info = surplus_info(usage, tz)
     if info and ((spare is not None and spare >= 10) or info["cannot_finish"]):  # 很有餘裕以上才換算
-        fields.append(surplus_field(info, free, reserved))
+        lines += ["", *surplus_lines(info, free, after_reserve=not deadline)]
 
     if spare is not None and spare >= 3 and weekday_now(tz) in (4, 5):  # 週五、週六，而且有餘裕
         fields.append({"name": "🎉 週末加碼",
